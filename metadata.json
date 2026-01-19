@@ -1,0 +1,9 @@
+{
+  "name": "PinkDiary - 每日手账日志",
+  "description": "一个唯美的手机端管理每日日志、手账、想法与计划的应用。支持按年分页、三栏视图、心情记录、标签分类以及手账内容下载。",
+  "requestFramePermissions": [
+    "camera",
+    "microphone",
+    "geolocation"
+  ]
+}
