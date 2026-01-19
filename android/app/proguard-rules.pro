@@ -14,8 +14,50 @@
 
 # Uncomment this to preserve the line number information for
 # debugging stack traces.
-#-keepattributes SourceFile,LineNumberTable
+-keepattributes SourceFile,LineNumberTable
 
 # If you keep the line number information, uncomment this to
 # hide the original source file name.
 #-renamesourcefileattribute SourceFile
+
+# ===== Kotlin & Coroutines Rules =====
+# Keep Kotlin Metadata
+-keep class kotlin.Metadata { *; }
+
+# Keep Kotlin coroutines
+-keepnames class kotlinx.coroutines.internal.MainDispatcherFactory {}
+-keepnames class kotlinx.coroutines.CoroutineExceptionHandler {}
+-keep class kotlinx.coroutines.** { *; }
+-keep class kotlin.coroutines.** { *; }
+-dontwarn kotlinx.coroutines.**
+
+# Keep all Kotlin internal classes used by coroutines
+-keep class kotlin.coroutines.jvm.internal.** { *; }
+-keep class kotlin.coroutines.intrinsics.** { *; }
+
+# Keep continuation classes
+-keep class kotlin.coroutines.Continuation
+-keep class kotlin.coroutines.ContinuationInterceptor
+
+# ===== Capacitor Plugin Rules =====
+# Keep all Capacitor plugin classes
+-keep class com.capacitorjs.** { *; }
+-keep @com.getcapacitor.annotation.CapacitorPlugin class * {
+    @com.getcapacitor.annotation.PermissionCallback <methods>;
+    @com.getcapacitor.annotation.ActivityCallback <methods>;
+    @com.getcapacitor.PluginMethod public <methods>;
+}
+
+# Keep WebView JavaScript Bridge
+-keepclassmembers class * {
+    @android.webkit.JavascriptInterface <methods>;
+}
+
+# Keep native methods
+-keepclasseswithmembernames class * {
+    native <methods>;
+}
+
+# ===== AndroidX Rules =====
+-keep class androidx.** { *; }
+-dontwarn androidx.**
