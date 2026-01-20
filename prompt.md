@@ -8,24 +8,110 @@
 ## 环境信息
 - **OS**: Windows
 - **Project Type**: React + Vite
-- **Current JDK**: 17 (请确保配置兼容此版本)
+- **JDK Version**: 17 (必须使用)
+- **Gradle Version**: 8.11.1
+- **Android Gradle Plugin**: 8.7.2
+- **Kotlin Version**: 1.9.24
 
-## 执行步骤
+---
 
-### 1. 初始化与依赖安装
-- 检查并安装 `@capacitor/core`, `@capacitor/cli`, `@capacitor/android`。
-- 初始化 Capacitor 项目 (`npx cap init`)。
-- 添加 Android 平台 (`npx cap add android`)。
+## 一、初始化 Capacitor 项目
 
-### 2. 构建与同步
-- 运行 Web 构建 (`npm run build`)。
-- 将构建产物同步到 Android (`npx cap sync android`)。
+### 1. 安装依赖
+```bash
+npm install @capacitor/core @capacitor/cli @capacitor/android
+```
 
-### 3. **关键配置修正 (必须执行)**
-为避免构建失败，请预先修改 Gradle 配置：
+### 2. 初始化 Capacitor
+```bash
+npx cap init [AppName] [AppId] --web-dir dist
+```
+例如：`npx cap init PinkDiary com.pinkdiary.app --web-dir dist`
 
-#### A. 修复 JDK 版本不兼容 (无效的源发行版: 21)
-在 `android/app/build.gradle` 和 `android/build.gradle` 中，强制设置 Java 兼容性为 1.8 或 17（取决于本地 JDK）：
+### 3. 添加 Android 平台
+```bash
+npx cap add android
+```
+
+---
+
+## 二、构建与同步
+
+### 1. 构建 Web 应用
+```bash
+npm run build
+```
+
+### 2. 同步到 Android
+```bash
+npx cap sync android
+```
+
+---
+
+## 三、关键配置修正 ⚠️ 必须执行
+
+### A. 修改 `android/build.gradle`
+
+确保配置如下：
+
+```gradle
+// Top-level build file where you can add configuration options common to all sub-projects/modules.
+
+buildscript {
+    
+    repositories {
+        google()
+        mavenCentral()
+    }
+    dependencies {
+        classpath 'com.android.tools.build:gradle:8.7.2'
+        classpath 'com.google.gms:google-services:4.4.2'
+    }
+}
+
+apply from: "variables.gradle"
+
+allprojects {
+    repositories {
+        google()
+        mavenCentral()
+    }
+    afterEvaluate { project ->
+        if (project.hasProperty('android')) {
+            project.android {
+                compileOptions {
+                    sourceCompatibility JavaVersion.VERSION_17
+                    targetCompatibility JavaVersion.VERSION_17
+                }
+            }
+        }
+        // Fix for Kotlin version conflict using dynamic task configuration
+        project.tasks.matching { it.name.startsWith('compile') && it.name.endsWith('Kotlin') }.configureEach {
+            kotlinOptions {
+                jvmTarget = "17"
+            }
+        }
+    }
+    configurations.all {
+        resolutionStrategy {
+            force 'org.jetbrains.kotlin:kotlin-stdlib:1.9.24'
+            force 'org.jetbrains.kotlin:kotlin-stdlib-jdk7:1.9.24'
+            force 'org.jetbrains.kotlin:kotlin-stdlib-jdk8:1.9.24'
+            force 'org.jetbrains.kotlinx:kotlinx-coroutines-core:1.8.1'
+            force 'org.jetbrains.kotlinx:kotlinx-coroutines-android:1.8.1'
+        }
+    }
+}
+
+task clean(type: Delete) {
+    delete rootProject.buildDir
+}
+```
+
+### B. 修改 `android/app/build.gradle`
+
+在 `android {}` 块中确保有：
 ```gradle
 compileOptions {
     sourceCompatibility JavaVersion.VERSION_17
@@ -33,26 +119,92 @@ compileOptions {
 }
 ```
 
-#### B. 修复 Kotlin 版本冲突 (Duplicate class errors)
-在 `android/build.gradle` 的 `allprojects` 或根级别添加依赖解析策略，强制统一 Kotlin 标准库版本：
+在 `dependencies {}` 中添加 Kotlin 协程：
 ```gradle
-allprojects {
-    // ... repositories ...
-    configurations.all {
-        resolutionStrategy {
-            force 'org.jetbrains.kotlin:kotlin-stdlib:1.8.22'
-            force 'org.jetbrains.kotlin:kotlin-stdlib-jdk7:1.8.22'
-            force 'org.jetbrains.kotlin:kotlin-stdlib-jdk8:1.8.22'
-        }
-    }
+// Kotlin coroutines dependencies for Capacitor plugins (Geolocation, Filesystem, etc.)
+implementation "org.jetbrains.kotlinx:kotlinx-coroutines-android:1.8.1"
+implementation "org.jetbrains.kotlinx:kotlinx-coroutines-core:1.8.1"
+```
+
+### C. 修改 `android/gradle/wrapper/gradle-wrapper.properties`
+
+```properties
+distributionUrl=https\://services.gradle.org/distributions/gradle-8.11.1-all.zip
+```
+
+### D. 确认 `android/variables.gradle`
+
+```gradle
+ext {
+    minSdkVersion = 23
+    compileSdkVersion = 35
+    targetSdkVersion = 35
+    androidxActivityVersion = '1.9.2'
+    androidxAppCompatVersion = '1.7.0'
+    androidxCoordinatorLayoutVersion = '1.2.0'
+    androidxCoreVersion = '1.15.0'
+    androidxFragmentVersion = '1.8.4'
+    coreSplashScreenVersion = '1.0.1'
+    androidxWebkitVersion = '1.12.1'
+    junitVersion = '4.13.2'
+    androidxJunitVersion = '1.2.1'
+    androidxEspressoCoreVersion = '3.6.1'
+    cordovaAndroidVersion = '10.1.1'
 }
 ```
 
-### 4. 构建 APK
-- 进入 `android` 目录。
-- 运行清理命令: `.\gradlew clean`。
-- 运行构建命令: `.\gradlew assembleDebug`。
+---
 
-### 5. 输出
-- 告知生成的 APK 路径 (通常在 `android/app/build/outputs/apk/debug/app-debug.apk`)。
-- 在 `package.json` 中添加便捷脚本 (`cap:build`, `cap:sync` 等)。
+## 四、构建 APK
+
+### 方法一：命令行构建
+
+```bash
+cd android
+.\gradlew clean
+.\gradlew assembleDebug
+```
+
+### 方法二：使用 npm 脚本
+
+在 `package.json` 中添加脚本后：
+```bash
+npm run cap:sync    # 构建 + 同步
+npm run cap:build   # 构建 Debug APK
+npm run cap:release # 构建 Release APK
+```
+
+---
+
+## 五、输出位置
+
+生成的 APK 位于：
+```
+android/app/build/outputs/apk/debug/app-debug.apk
+```
+
+---
+
+## 六、常见问题解决
+
+| 错误信息 | 原因 | 解决方案 |
+|---------|------|---------|
+| `无效的源发行版: 21` | JDK 版本不匹配 | 设置 `JavaVersion.VERSION_17` |
+| `Duplicate class kotlin.xxx` | Kotlin 版本冲突 | 使用 `resolutionStrategy.force` 统一版本到 `1.9.24` |
+| `Unresolved reference: async` | 缺少协程依赖 | 添加 `kotlinx-coroutines-android:1.8.1` |
+| `Could not resolve kotlin-stdlib-jdk8` | Kotlin stdlib 版本冲突 | 强制统一所有 kotlin-stdlib 版本 |
+
+---
+
+## 七、版本兼容表 (已验证)
+
+| 组件 | 版本 |
+|------|------|
+| JDK | 17 |
+| Gradle | 8.11.1 |
+| Android Gradle Plugin | 8.7.2 |
+| Kotlin | 1.9.24 |
+| Capacitor | 6.2.0 |
+| compileSdkVersion | 35 |
+| targetSdkVersion | 35 |
+| minSdkVersion | 23 |

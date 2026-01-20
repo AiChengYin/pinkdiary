@@ -1,7 +1,8 @@
 
 import React, { useState, useEffect, useRef } from 'react';
-import { getSetting, setSetting } from '../db';
+import { getSetting, setSetting, db } from '../db';
 import { Capacitor } from '@capacitor/core';
+import { Filesystem, Directory, Encoding } from '@capacitor/filesystem';
 
 interface MyPageProps {
   onBack: () => void;
@@ -15,29 +16,101 @@ const BACKGROUND_PRESETS = [
   { name: 'Modern Zinc', value: '#f4f4f5', type: 'color' },
 ];
 
+// Compression utilities using native CompressionStream API
+async function compressData(data: string): Promise<string> {
+  const encoder = new TextEncoder();
+  const inputBytes = encoder.encode(data);
+
+  // Use gzip compression
+  const cs = new CompressionStream('gzip');
+  const writer = cs.writable.getWriter();
+  writer.write(inputBytes);
+  writer.close();
+
+  const compressedChunks: Uint8Array[] = [];
+  const reader = cs.readable.getReader();
+
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    compressedChunks.push(value);
+  }
+
+  // Combine chunks
+  const totalLength = compressedChunks.reduce((acc, chunk) => acc + chunk.length, 0);
+  const compressedBytes = new Uint8Array(totalLength);
+  let offset = 0;
+  for (const chunk of compressedChunks) {
+    compressedBytes.set(chunk, offset);
+    offset += chunk.length;
+  }
+
+  // Convert to base64
+  let binary = '';
+  for (let i = 0; i < compressedBytes.length; i++) {
+    binary += String.fromCharCode(compressedBytes[i]);
+  }
+  return btoa(binary);
+}
+
+async function decompressData(base64Data: string): Promise<string> {
+  // Decode base64
+  const binary = atob(base64Data);
+  const compressedBytes = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i++) {
+    compressedBytes[i] = binary.charCodeAt(i);
+  }
+
+  // Use gzip decompression
+  const ds = new DecompressionStream('gzip');
+  const writer = ds.writable.getWriter();
+  writer.write(compressedBytes);
+  writer.close();
+
+  const decompressedChunks: Uint8Array[] = [];
+  const reader = ds.readable.getReader();
+
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    decompressedChunks.push(value);
+  }
+
+  // Combine chunks
+  const totalLength = decompressedChunks.reduce((acc, chunk) => acc + chunk.length, 0);
+  const decompressedBytes = new Uint8Array(totalLength);
+  let offset = 0;
+  for (const chunk of decompressedChunks) {
+    decompressedBytes.set(chunk, offset);
+    offset += chunk.length;
+  }
+
+  const decoder = new TextDecoder();
+  return decoder.decode(decompressedBytes);
+}
+
 const MyPage: React.FC<MyPageProps> = ({ onBack }) => {
   const [userName, setUserName] = useState('ユーザー様');
   const [avatar, setAvatar] = useState('🌸');
-  const [dbPath, setDbPath] = useState('');
   const [bgValue, setBgValue] = useState('#ffffff');
   const [bgIsImage, setBgIsImage] = useState(false);
   const [isSaved, setIsSaved] = useState(false);
+  const [isBackingUp, setIsBackingUp] = useState(false);
+  const [isRestoring, setIsRestoring] = useState(false);
 
   const avatarInputRef = useRef<HTMLInputElement>(null);
   const bgImageInputRef = useRef<HTMLInputElement>(null);
-  const folderInputRef = useRef<HTMLInputElement>(null);
+  const restoreInputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
     const loadSettings = async () => {
       const name = await getSetting('user_name', 'ユーザー様');
       const av = await getSetting('user_avatar', '🌸');
-      const path = await getSetting('sqlite_path', 'Documents/PinkDiary/Data/');
       const bg = await getSetting('default_bg_value', '#ffffff');
       const isImg = await getSetting('bg_is_image', false);
 
       setUserName(name);
       setAvatar(av);
-      setDbPath(path);
       setBgValue(bg);
       setBgIsImage(isImg);
     };
@@ -47,7 +120,6 @@ const MyPage: React.FC<MyPageProps> = ({ onBack }) => {
   const handleSave = async () => {
     await setSetting('user_name', userName);
     await setSetting('user_avatar', avatar);
-    await setSetting('sqlite_path', dbPath);
     await setSetting('default_bg_value', bgValue);
     await setSetting('bg_is_image', bgIsImage);
 
@@ -76,31 +148,238 @@ const MyPage: React.FC<MyPageProps> = ({ onBack }) => {
     }
   };
 
-  const handleFolderClick = async () => {
-    if (Capacitor.isNativePlatform()) {
-      alert("Androidアプリでは、データは自動的に内部ストレージに保存されます。変更はできません。");
+  // Backup function - by month
+  const handleBackup = async () => {
+    if (isBackingUp) return;
+
+    // Get current year and month as default
+    const now = new Date();
+    const currentYear = now.getFullYear();
+    const currentMonth = now.getMonth() + 1;
+
+    // Ask user for year and month
+    const yearInput = window.prompt(
+      'バックアップする年を入力してください：',
+      String(currentYear)
+    );
+    if (!yearInput) return;
+
+    const year = parseInt(yearInput, 10);
+    if (isNaN(year) || year < 2000 || year > 2100) {
+      alert('有効な年を入力してください（2000-2100）');
       return;
     }
 
-    // Attempt modern Directory Picker for a native folder selection experience
-    if ('showDirectoryPicker' in window) {
-      try {
-        const handle = await (window as any).showDirectoryPicker();
-        setDbPath(`Device/${handle.name}/DiaryStorage/`);
-      } catch (err) {
-        console.warn('Picker cancelled or blocked', err);
+    const monthInput = window.prompt(
+      'バックアップする月を入力してください（1-12）：',
+      String(currentMonth)
+    );
+    if (!monthInput) return;
+
+    const month = parseInt(monthInput, 10);
+    if (isNaN(month) || month < 1 || month > 12) {
+      alert('有効な月を入力してください（1-12）');
+      return;
+    }
+
+    setIsBackingUp(true);
+
+    try {
+      // Calculate date range for the selected month
+      const startDate = new Date(year, month - 1, 1);
+      const endDate = new Date(year, month, 0, 23, 59, 59, 999); // Last day of month
+
+      const startISO = startDate.toISOString();
+      const endISO = endDate.toISOString();
+
+      // Filter diaries by date range
+      const allDiaries = await db.diaries.toArray();
+      const filteredDiaries = allDiaries.filter(d => {
+        const diaryDate = d.date;
+        return diaryDate >= startISO.split('T')[0] && diaryDate <= endISO.split('T')[0];
+      });
+
+      if (filteredDiaries.length === 0) {
+        alert(`${year}年${month}月の日記はありません。`);
+        setIsBackingUp(false);
+        return;
       }
-    } else {
-      // Fallback for non-supported browsers
-      folderInputRef.current?.click();
+
+      const backupData = {
+        version: 2,
+        type: 'monthly',
+        year,
+        month,
+        timestamp: new Date().toISOString(),
+        diaries: filteredDiaries
+      };
+
+      const jsonData = JSON.stringify(backupData);
+      const originalSize = new Blob([jsonData]).size;
+
+      // Compress data
+      const compressedData = await compressData(jsonData);
+      const compressedSize = new Blob([compressedData]).size;
+
+      const compressionRatio = ((1 - compressedSize / originalSize) * 100).toFixed(1);
+      console.log(`Compression: ${originalSize} -> ${compressedSize} bytes (${compressionRatio}% reduced)`);
+
+      // Filename includes year and month
+      const monthStr = String(month).padStart(2, '0');
+      const fileName = `PinkDiary_${year}年${monthStr}月.pdbak`;
+
+      if (Capacitor.isNativePlatform()) {
+        try {
+          await Filesystem.writeFile({
+            path: fileName,
+            data: compressedData,
+            directory: Directory.Documents,
+            encoding: Encoding.UTF8
+          });
+          alert(`バックアップが完了しました！📦\n\n対象: ${year}年${month}月\n保存先: Documents/${fileName}\n圧縮率: ${compressionRatio}%\n日記: ${filteredDiaries.length}件`);
+        } catch (e: any) {
+          console.error('Backup save failed:', e);
+          downloadAsFile(compressedData, fileName);
+        }
+      } else {
+        downloadAsFile(compressedData, fileName);
+        alert(`バックアップが完了しました！📦\n\n対象: ${year}年${month}月\n圧縮率: ${compressionRatio}%\n日記: ${filteredDiaries.length}件`);
+      }
+    } catch (error: any) {
+      console.error('Backup failed:', error);
+      alert('バックアップに失敗しました。\n\nエラー: ' + (error.message || error));
+    } finally {
+      setIsBackingUp(false);
     }
   };
 
-  const handleFolderSelectFallback = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const files = e.target.files;
-    if (files && files.length > 0) {
-      const pathPart = files[0].webkitRelativePath.split('/')[0] || '選択したフォルダ';
-      setDbPath(`Device/${pathPart}/DiaryStorage/`);
+  const downloadAsFile = (data: string, fileName: string) => {
+    const blob = new Blob([data], { type: 'application/octet-stream' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = fileName;
+    a.click();
+    URL.revokeObjectURL(url);
+  };
+
+  // Restore function
+  const handleRestoreClick = () => {
+    restoreInputRef.current?.click();
+  };
+
+  const handleRestoreFile = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    if (isRestoring) return;
+    setIsRestoring(true);
+
+    try {
+      const compressedData = await file.text();
+
+      // Decompress data
+      const jsonData = await decompressData(compressedData);
+      const backupData = JSON.parse(jsonData);
+
+      if (!backupData.diaries) {
+        throw new Error('無効なバックアップファイルです');
+      }
+
+      const diaryCount = backupData.diaries.length;
+      let confirmMessage = '';
+      let isMonthly = false;
+      let dateRange = { start: '', end: '' };
+
+      if (backupData.version === 2 && backupData.type === 'monthly') {
+        isMonthly = true;
+        const { year, month } = backupData;
+        const startDate = new Date(year, month - 1, 1);
+        const endDate = new Date(year, month, 0);
+
+        dateRange.start = startDate.toISOString().split('T')[0];
+        dateRange.end = endDate.toISOString().split('T')[0];
+
+        confirmMessage =
+          `【月次データの復元】\n` +
+          `対象: ${year}年${month}月\n` +
+          `📝 日記数: ${diaryCount}件\n\n` +
+          `⚠️ この月の既存データは上書きされます。\n` +
+          `（他の月のデータは保持されます）`;
+      } else {
+        // Version 1 or unknown (Full backup)
+        const backupDate = backupData.timestamp ? new Date(backupData.timestamp).toLocaleDateString('ja-JP') : '不明';
+        confirmMessage =
+          `【全データの復元】\n` +
+          `📅 バックアップ日: ${backupDate}\n` +
+          `📝 日記数: ${diaryCount}件\n\n` +
+          `⚠️ 警告: 現在の全てのデータが消去され、上書きされます。`;
+      }
+
+      // Confirm restore
+      const confirmed = window.confirm(confirmMessage + `\n\n復元しますか？`);
+
+      if (!confirmed) {
+        setIsRestoring(false);
+        return;
+      }
+
+      if (isMonthly) {
+        // For monthly backup: Delete only target month's data
+        console.log(`Clearing data from ${dateRange.start} to ${dateRange.end}`);
+
+        // Find IDs to delete in this range
+        const existingInMonth = await db.diaries
+          .where('date')
+          .between(dateRange.start, dateRange.end, true, true)
+          .toArray();
+
+        const idsToDelete = existingInMonth.map(d => d.id).filter((id): id is number => id !== undefined);
+        if (idsToDelete.length > 0) {
+          await db.diaries.bulkDelete(idsToDelete);
+        }
+
+        // Insert new data
+        if (backupData.diaries.length > 0) {
+          await db.diaries.bulkPut(backupData.diaries);
+        }
+      } else {
+        // Full Restore: Clear everything
+        await db.diaries.clear();
+        await db.settings.clear();
+
+        if (backupData.diaries?.length > 0) {
+          await db.diaries.bulkPut(backupData.diaries);
+        }
+        if (backupData.settings?.length > 0) {
+          await db.settings.bulkPut(backupData.settings);
+        }
+
+        // Reload settings in UI
+        const name = await getSetting('user_name', 'ユーザー様');
+        const av = await getSetting('user_avatar', '🌸');
+        const bg = await getSetting('default_bg_value', '#ffffff');
+        const isImg = await getSetting('bg_is_image', false);
+        setUserName(name);
+        setAvatar(av);
+        setBgValue(bg);
+        setBgIsImage(isImg);
+      }
+
+      alert(`復元が完了しました！🎉\n\n日記 ${diaryCount}件 を復元しました。`);
+    } catch (error: any) {
+      console.error('Restore failed:', error);
+      if (error.message?.includes('gunzip')) {
+        alert('バックアップファイルの解凍に失敗しました。\nファイルが壊れているか、形式が正しくありません。');
+      } else {
+        alert('復元に失敗しました。\n\nエラー: ' + (error.message || error));
+      }
+    } finally {
+      setIsRestoring(false);
+      // Reset input
+      if (restoreInputRef.current) {
+        restoreInputRef.current.value = '';
+      }
     }
   };
 
@@ -148,39 +427,44 @@ const MyPage: React.FC<MyPageProps> = ({ onBack }) => {
           </div>
         </section>
 
-        {/* Data Storage Setting */}
+        {/* Backup & Restore Section */}
         <section className="space-y-3">
           <div className="flex items-center gap-2 px-1">
-            <span className="material-icons-round text-primary text-xl">folder_shared</span>
-            <h3 className="text-xs font-bold text-gray-500 dark:text-gray-400 uppercase tracking-widest">データの保存先</h3>
+            <span className="material-icons-round text-primary text-xl">backup</span>
+            <h3 className="text-xs font-bold text-gray-500 dark:text-gray-400 uppercase tracking-widest">バックアップ・復元</h3>
           </div>
-          <div
-            onClick={handleFolderClick}
-            className="bg-white dark:bg-zinc-800 rounded-2xl p-5 shadow-sm border border-pink-50 dark:border-zinc-700 cursor-pointer active:scale-[0.98] transition-all hover:bg-pink-50/20 dark:hover:bg-zinc-700/20"
-          >
-            <div className="flex items-center gap-4">
-              <div className="w-12 h-12 rounded-xl bg-pink-100 dark:bg-zinc-700 flex items-center justify-center text-primary">
-                <span className="material-icons-round text-2xl">folder</span>
-              </div>
-              <div className="flex-1 min-w-0">
-                <p className="text-sm font-bold text-gray-700 dark:text-gray-200 truncate">
-                  {dbPath.split('/').filter(Boolean).pop() || 'フォルダを選択'}
-                </p>
-                <p className="text-[10px] text-gray-400 truncate mt-0.5">{dbPath || '未設定'}</p>
-              </div>
-              <span className="material-icons-round text-gray-300">chevron_right</span>
+          <div className="bg-white dark:bg-zinc-800 rounded-2xl p-5 shadow-sm border border-pink-50 dark:border-zinc-700 space-y-4">
+            <p className="text-xs text-gray-500 dark:text-gray-400 leading-relaxed">
+              大切な日記データをバックアップして、いつでも復元できます。定期的なバックアップをおすすめします。
+            </p>
+            <div className="grid grid-cols-2 gap-3">
+              <button
+                onClick={handleBackup}
+                disabled={isBackingUp}
+                className="flex items-center justify-center gap-2 py-3 px-4 bg-gradient-to-r from-blue-500 to-blue-600 text-white rounded-xl font-bold shadow-lg shadow-blue-200 dark:shadow-none active:scale-95 transition-all disabled:opacity-50"
+              >
+                <span className="material-icons-round text-lg">{isBackingUp ? 'hourglass_top' : 'cloud_upload'}</span>
+                <span className="text-sm">{isBackingUp ? '処理中...' : 'バックアップ'}</span>
+              </button>
+              <button
+                onClick={handleRestoreClick}
+                disabled={isRestoring}
+                className="flex items-center justify-center gap-2 py-3 px-4 bg-gradient-to-r from-emerald-500 to-emerald-600 text-white rounded-xl font-bold shadow-lg shadow-emerald-200 dark:shadow-none active:scale-95 transition-all disabled:opacity-50"
+              >
+                <span className="material-icons-round text-lg">{isRestoring ? 'hourglass_top' : 'cloud_download'}</span>
+                <span className="text-sm">{isRestoring ? '処理中...' : '復元'}</span>
+              </button>
             </div>
-            {/* Standard fallback hidden input */}
             <input
-              ref={folderInputRef}
+              ref={restoreInputRef}
               type="file"
-              {...({ webkitdirectory: "true" } as any)}
+              accept=".pdbak"
               className="hidden"
-              onChange={handleFolderSelectFallback}
+              onChange={handleRestoreFile}
             />
           </div>
           <p className="px-2 text-[9px] text-gray-400 leading-relaxed italic">
-            ※ 日記のファイルが保存されるフォルダを指定します。
+            ※ バックアップファイル（.pdbak）は圧縮されています。復元時は同じアプリで作成したファイルをご使用ください。
           </p>
         </section>
 

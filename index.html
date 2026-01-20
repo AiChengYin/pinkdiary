@@ -59,6 +59,15 @@
             border-color: rgba(255,255,255,0.05);
             background-color: #2d2d2d;
         }
+        
+        /* ========================================
+         * html2canvas 文字偏移修复
+         * 覆盖 Tailwind CSS Preflight 的默认样式
+         * ======================================== */
+        img, svg, video, canvas, audio, iframe, embed, object {
+            display: inline-block !important;
+            vertical-align: middle;
+        }
     </style>
 <script type="importmap">
 {

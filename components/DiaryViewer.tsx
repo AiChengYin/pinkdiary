@@ -4,7 +4,6 @@ import { DiaryEntry } from '../types';
 import { getSetting } from '../db';
 import html2canvas from 'html2canvas';
 import { Capacitor } from '@capacitor/core';
-import { Media } from '@capacitor-community/media';
 import { Filesystem, Directory } from '@capacitor/filesystem';
 
 interface DiaryViewerProps {
@@ -17,6 +16,7 @@ const DiaryViewer: React.FC<DiaryViewerProps> = ({ entry, onBack, onEdit }) => {
   const cardRef = useRef<HTMLDivElement>(null);
   const [bgValue, setBgValue] = useState('#ffffff');
   const [bgIsImage, setBgIsImage] = useState(false);
+  const [isSaving, setIsSaving] = useState(false);
 
   useEffect(() => {
     const loadBg = async () => {
@@ -31,7 +31,10 @@ const DiaryViewer: React.FC<DiaryViewerProps> = ({ entry, onBack, onEdit }) => {
 
 
   const downloadImage = async () => {
-    if (!cardRef.current) return;
+    if (!cardRef.current || isSaving) return;
+
+    setIsSaving(true);
+
     try {
       const canvas = await html2canvas(cardRef.current, {
         useCORS: true,
@@ -42,39 +45,45 @@ const DiaryViewer: React.FC<DiaryViewerProps> = ({ entry, onBack, onEdit }) => {
       });
 
       const dataUrl = canvas.toDataURL('image/png', 0.9);
+      const fileName = `Diary-${entry.date.split('T')[0]}-${Date.now()}.png`;
 
       if (Capacitor.isNativePlatform()) {
         try {
-          // 1. Write to temporary file
-          const fileName = `Diary-${entry.date.split('T')[0]}.png`;
-          // Remove header "data:image/png;base64,"
           const base64Data = dataUrl.split(',')[1];
 
-          const savedFile = await Filesystem.writeFile({
-            path: fileName,
+          // Save to Documents directory (accessible by user)
+          const result = await Filesystem.writeFile({
+            path: `PinkDiary/${fileName}`,
             data: base64Data,
-            directory: Directory.Cache
+            directory: Directory.Documents,
+            recursive: true  // Create PinkDiary folder if not exists
           });
 
-          // 2. Save to gallery from file path
-          await Media.savePhoto({
-            path: savedFile.uri
-          });
+          console.log('File saved:', result.uri);
+          alert(`画像を保存しました！📸\n\n保存先: Documents/PinkDiary/${fileName}\n\nファイルマネージャーから確認できます。`);
+        } catch (e: any) {
+          console.error('Save failed:', e);
 
-          alert('画像が保存されました！');
-        } catch (e) {
-          console.error('Save failed', e);
-          alert('保存に失敗しました。ストレージ権限が必要かもしれません。');
+          const errorMsg = e.message || e.toString() || '';
+
+          if (errorMsg.toLowerCase().includes('permission')) {
+            alert('ストレージへのアクセス権限が必要です。');
+          } else {
+            alert('保存に失敗しました。\n\nエラー: ' + errorMsg);
+          }
         }
       } else {
+        // Web browser: download directly
         const link = document.createElement('a');
-        link.download = `Diary-${entry.date.split('T')[0]}.png`;
+        link.download = fileName;
         link.href = dataUrl;
         link.click();
       }
-    } catch (err) {
-      console.error('Failed to download image:', err);
-      alert('保存に失敗しました。もう一度お試しください。');
+    } catch (err: any) {
+      console.error('Failed to generate image:', err);
+      alert('画像の生成に失敗しました。もう一度お試しください。');
+    } finally {
+      setIsSaving(false);
     }
   };
 
@@ -163,7 +172,12 @@ const DiaryViewer: React.FC<DiaryViewerProps> = ({ entry, onBack, onEdit }) => {
                     {entry.tags.map(t => (
                       <span
                         key={t}
-                        className="inline-flex items-center justify-center text-[10px] text-primary bg-primary/10 dark:bg-primary/20 px-2.5 py-1 rounded-full font-bold border border-primary/10 leading-none h-6 box-border"
+                        className="text-[11px] text-primary bg-primary/10 dark:bg-primary/20 rounded-full font-bold border border-primary/10"
+                        style={{
+                          display: 'inline-block',
+                          padding: '5px 12px',
+                          lineHeight: '1'
+                        }}
                       >
                         #{t}
                       </span>
